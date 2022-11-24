@@ -2,7 +2,7 @@
 n*/
 
 # Tests
-test.py
+test*
 
 # Outputs
 output/
