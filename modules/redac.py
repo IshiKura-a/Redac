@@ -1,10 +1,15 @@
+import sys
+
 import torch
 
-from typing import Any, Optional, List
+from typing import Any, Optional, List, Tuple
 from torch import nn, Tensor
+from torch.utils.data import Dataset, Subset, DataLoader
 from torchmetrics.functional import pairwise_cosine_similarity, pairwise_euclidean_distance
-from datasets import Dataset
 from torch.nn.functional import softmax
+from tqdm import tqdm
+
+from modules.dataset import BaseDataset, RedacDataset
 from utils.logger import logger
 
 
@@ -16,14 +21,12 @@ class Redac:
     - Usage: Redac(model, extractor).cluster(dataset, k) --> cluster_index, assignment
     """
 
-    def __init__(self, model: nn.Module, extractor: Any):
-        self.model = model
-        self.extractor = extractor
-        self._features = None
+    def __init__(self, model: nn.Module) -> None:
+        self.model = model.cuda()
         self._probs = None
 
     @staticmethod
-    def flattened_cosine_similarity(x: Tensor, y: Tensor):
+    def flattened_cosine_similarity(x: Tensor, y: Tensor) -> Tensor:
         flattened_x = x.flatten(start_dim=1, end_dim=len(x.shape) - 1)
         if y is None:
             return pairwise_cosine_similarity(flattened_x, zero_diagonal=False)
@@ -32,7 +35,7 @@ class Redac:
             return pairwise_cosine_similarity(flattened_x, flattened_y, zero_diagonal=False)
 
     @staticmethod
-    def discriminate(x: Tensor, y: Optional[Tensor] = None, mode: Optional[str] = "cosine"):
+    def discriminate(x: Tensor, y: Optional[Tensor] = None, mode: Optional[str] = "cosine") -> Tuple[Tensor, Tensor]:
         flattened_x = x.flatten(start_dim=1, end_dim=len(x.shape) - 1)
         flattened_y = flattened_x if y is None else y.flatten(start_dim=1, end_dim=len(y.shape) - 1)
         if mode == "cosine":
@@ -44,7 +47,7 @@ class Redac:
             return (max_dist - dist) / max_dist, dist
 
     @staticmethod
-    def log_info(k: int, assignment: Tensor):
+    def log_info(k: int, assignment: Tensor) -> None:
         logger.info(f'Using {k} clusters')
         logger.info("------------Cluster Info-------------")
         info: List = []
@@ -52,7 +55,7 @@ class Redac:
             member = (assignment == i).nonzero(as_tuple=False).squeeze().long()
             if not isinstance(member.tolist(), list):
                 member = [member]
-            logger.info(f'{k}th cluster has {len(member)} members.')
+            logger.info(f'{i}th cluster has {len(member)} members.')
             info.append(len(member))
 
         info: Tensor = Tensor(info)
@@ -64,27 +67,62 @@ class Redac:
     Mind: dataset is a Dataset object, which has "image" as a key
     """
 
-    def cluster(self, dataset: Dataset, k: int, epsilon: float = 0.99999):
-        inputs = self.extractor(dataset["image"], return_tensors="pt")
-        features = inputs.data["pixel_values"]
-        self._features = features
+    def cluster(self, dataset: Subset[RedacDataset], k: int, epsilon: float = 0.9997) -> Tuple[Tensor, Tensor]:
+        from modules.preprocess import get_loader
+        loader_kwargs = {"batch_size": 512, "num_workers": 4, "pin_memory": False}
+        batch_loader = DataLoader(dataset, **loader_kwargs)
+        self.model.eval()
+
+        logger.info("Use backbone to get probabilities")
+        probs = []
         with torch.no_grad():
-            output = self.model(**inputs)
-            logits = output.logits
+            for batch_idx, batch in tqdm(enumerate(batch_loader)):
+                batch = tuple(t.cuda() for t in batch)
+                x = batch[0]
+                outputs = self.model(x)
+                batch_probs = softmax(outputs, dim=1)
+                probs.append(batch_probs)
 
-        probs = softmax(logits, dim=1)
-        self._probs = probs
-        probs_max = probs.max(dim=1)[0].sort(descending=True)
-        cluster_candidate = probs_max.indices[probs_max.values > epsilon]
+        self._probs = probs = torch.concatenate(probs).cpu()
+        probs_max = probs.max(dim=1)[0]
+        cluster_candidate = (probs_max > epsilon).nonzero(as_tuple=False).squeeze().long()
 
-        similarity, distance = self.discriminate(features, mode="l2")
-        cluster_dist = distance[cluster_candidate, :][:, cluster_candidate].sum(dim=0)
+        logger.info(f'Get {len(cluster_candidate)} cluster candidates')
+        if len(cluster_candidate) < k * 2:
+            logger.warning(f'Too small epsilon {epsilon}, please change to a larger one')
+            if len(cluster_candidate) < k:
+                rem = 1 - epsilon
+                logger.critical(f'Cluster candidate is not enough, system crashed!')
+                logger.critical(f'Infos of other epsilons:')
+                logger.critical(
+                    f'epsilon {1 - (rem * 10)}: {torch.count_nonzero(probs_max > 1 - (rem * 10))} candidates\n'
+                    f'epsilon {1 - (rem * 20)}: {torch.count_nonzero(probs_max > 1 - (rem * 20))} candidates\n'
+                    f'epsilon {1 - (rem * 50)}: {torch.count_nonzero(probs_max > 1 - (rem * 50))} candidates\n'
+                    f'epsilon {1 - (rem * 100)}: {torch.count_nonzero(probs_max > 1 - (rem * 100))} candidates\n'
+                    f'epsilon {1 - (rem * 1000)}: {torch.count_nonzero(probs_max > 1 - (rem * 1000))} candidates\n'
+                )
+                sys.exit(-1)
 
-        cluster_index = cluster_candidate[cluster_dist.topk(k).indices]
-        filtered_similarity = similarity[:, cluster_index]
-        assignment = filtered_similarity.argmax(dim=-1)
+        logger.info("Start to calculate similarities")
+        cluster_feature = torch.stack([dataset[i][0] for i in cluster_candidate])
+        similarity, distance = self.discriminate(cluster_feature.cuda(), mode="l2")
+        cluster_dist = distance.sum(dim=0)
+
+        cluster_index_in_candidate = cluster_dist.topk(k).indices.cpu()
+        cluster_index = cluster_candidate[cluster_index_in_candidate].long()
+        cluster_feature = cluster_feature[cluster_index_in_candidate]
+
+        logger.info("Starting assignments")
+        assignment = torch.Tensor().cuda()
+        for batch_idx, batch in tqdm(enumerate(batch_loader)):
+            batch = tuple(t.cuda() for t in batch)
+            x = batch[0]
+            sim, _ = self.discriminate(x, cluster_feature.cuda(), mode="l2")
+            ass = sim.argmax(dim=-1)
+            assignment = torch.concatenate((assignment, ass))
+
+        assignment = assignment.cpu().long()
         self.log_info(k, assignment)
-
         return cluster_index, assignment
 
     @property

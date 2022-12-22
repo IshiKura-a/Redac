@@ -4,7 +4,8 @@ import numpy as np
 from collections import Counter
 
 LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
-logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+handlers = [logging.FileHandler(f'result.log'), logging.StreamHandler()]
+logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, handlers=handlers)
 logger = logging.getLogger()
 
 
@@ -20,7 +21,7 @@ def log_redac_cluster(_best_k, _best_cluster_index, _best_assignment, _probs, _d
         cluster_label = _probs[_best_cluster_index[_i]].argmax(dim=-1).item()
         cluster_context = _dataset["label"][_best_cluster_index[_i]]
         logger.info(f'{_i}th cluster idx {_best_cluster_index[_i]:4} with label (ResNet): '
-              f'{_id2label[cluster_label]:10}, context: {cluster_context}')
+                    f'{_id2label[cluster_label]:10}, context: {cluster_context}')
         _member = (_best_assignment == _i).nonzero(as_tuple=False).squeeze().long()
 
         if isinstance(_member.tolist(), list):
