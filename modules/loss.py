@@ -42,7 +42,7 @@ class LossComputer:
 
         self.reset_stats()
 
-    def loss(self, yhat, y, group_idx=None, is_training=False):
+    def loss(self, yhat, y, group_idx=None):
         # compute per-sample and per-group losses
         per_sample_losses = self.criterion(yhat, y)
         group_loss, group_count = self.compute_group_avg(per_sample_losses, group_idx)
@@ -193,7 +193,7 @@ class LossComputer:
         for group_idx in range(self.n_groups):
             logger.info(
                 f'  {self.group_str(group_idx)}  '
-                f'[n = {int(self.processed_data_counts[group_idx])}]:\t'
+                f'[n = {int(self.processed_data_counts[group_idx]): 4}]: '
                 f'loss = {self.avg_group_loss[group_idx]:.3f}  '
                 f'exp loss = {self.exp_avg_loss[group_idx]:.3f}  '
                 f'adjusted loss = {self.exp_avg_loss[group_idx] + self.adj[group_idx] / torch.sqrt(self.group_counts)[group_idx]:.3f}  '
@@ -385,7 +385,7 @@ class RedacLossComputer:
         for group_idx in range(self.n_clusters):
             logger.info(
                 f'  {self.group_str(group_idx)}  '
-                f'[n = {int(self.processed_data_counts[group_idx])}]:\t'
+                f'[n = {int(self.processed_data_counts[group_idx]): 4}]: '
                 f'loss = {self.avg_group_loss[group_idx]:.3f}  '
                 f'exp loss = {self.exp_avg_loss[group_idx]:.3f}  '
                 f'adjusted loss = {self.exp_avg_loss[group_idx] + self.adj[group_idx] / torch.sqrt(self.cluster_counts)[group_idx]:.3f}  '

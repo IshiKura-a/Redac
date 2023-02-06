@@ -6,6 +6,8 @@ from typing import Optional, Union
 from torchvision import transforms
 from torch.utils.data import DataLoader, Subset
 from torch.utils.data.sampler import WeightedRandomSampler
+from torchvision.transforms import InterpolationMode
+
 from modules.dataset import BaseDataset, SubsetWrapper, RedacSubsetWrapper
 from utils.logger import logger
 
@@ -30,7 +32,34 @@ def get_transform_celebA(is_train: bool, augment_data: bool = False) -> transfor
                 target_resolution,
                 scale=(0.7, 1.0),
                 ratio=(1.0, 1.3333333333333333),
-                interpolation=2),
+                interpolation=InterpolationMode.BILINEAR),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ])
+    return transform
+
+
+def get_transform_waterbird(is_train: bool, augment_data: bool = False) -> transforms.Compose:
+    scale = 256.0/224.0
+    target_resolution = (224, 224)
+    assert target_resolution is not None
+
+    if (not is_train) or (not augment_data):
+        # Resizes the image to a slightly larger square then crops the center.
+        transform = transforms.Compose([
+            transforms.Resize((int(target_resolution[0]*scale), int(target_resolution[1]*scale))),
+            transforms.CenterCrop(target_resolution),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ])
+    else:
+        transform = transforms.Compose([
+            transforms.RandomResizedCrop(
+                target_resolution,
+                scale=(0.7, 1.0),
+                ratio=(0.75, 1.3333333333333333),
+                interpolation=InterpolationMode.BILINEAR),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])

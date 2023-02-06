@@ -1,10 +1,18 @@
 import logging
-import numpy as np
+import os.path
 
+import seaborn as sns
+import numpy as np
+import palettable
+import torch
+import matplotlib.pyplot as plt
+
+from argparse import Namespace
 from collections import Counter
+from pandas import DataFrame
 
 LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
-handlers = [logging.FileHandler(f'result.log'), logging.StreamHandler()]
+handlers = [logging.StreamHandler()]
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, handlers=handlers)
 logger = logging.getLogger()
 
@@ -70,3 +78,44 @@ def log_kmeans_cluster(info):
         _acc_list.append(row[3])
         logger.debug(format_row.format(i, *row))
     logger.debug(format_row.format("", "", "", "", np.mean(_acc_list)))
+
+
+def print_args(args: Namespace):
+    for name, value in vars(args).items():
+        logger.info(f'{name}={value}')
+
+
+def visualize_redac_cluster(attrs: DataFrame, attr_names: DataFrame, cluster_array: torch.Tensor, k: int,
+                            log_path: str) -> None:
+    base = []
+    max_ratio = 0
+
+    for j in range(len(attr_names)):
+        cluster_slice = (cluster_array != -1).numpy()
+        attr = attrs[cluster_slice, j]
+        one = (attr == 1).sum()
+        base.append(one / cluster_slice.shape[0])
+
+    figure = DataFrame(data={
+        name: np.zeros(k) for name in attr_names
+    })
+
+    for i in range(k):
+        cluster_slice = (cluster_array == i).numpy()
+        for j in range(len(attr_names)):
+            attr = attrs[cluster_slice, j]
+            one = (attr == 1).sum()
+            ratio = (one / np.count_nonzero(cluster_slice))
+            ratio /= base[j]
+            figure.at[i, attr_names[j]] = ratio
+            if max_ratio < ratio:
+                max_ratio = ratio
+
+    figure = figure.T
+    logger.info(base)
+    logger.info(figure)
+    logger.info(f'max_ratio:{max_ratio}')
+    plt.clf()
+    plt.figure(figsize=(16, 9), dpi=600)
+    fig = sns.heatmap(data=figure, vmin=0, vmax=3, annot=True, fmt=".2f", cmap="crest").get_figure()
+    fig.savefig(log_path)

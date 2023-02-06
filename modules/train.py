@@ -1,6 +1,6 @@
 import os
 from argparse import Namespace
-from typing import Union
+from typing import Union, Optional
 
 import numpy as np
 import torch
@@ -37,7 +37,7 @@ def run_epoch(epoch: int, model: nn.Module, optimizer: Optimizer, loader: DataLo
             c = batch[3]
 
             outputs = model(x)
-            loss_main = loss_computer.loss(outputs, y, c if is_training else g, is_training)
+            loss_main = loss_computer.loss(outputs, y, c if isinstance(loss_computer, RedacLossComputer) else g)
 
             if is_training:
                 optimizer.zero_grad()
@@ -54,17 +54,28 @@ def run_epoch(epoch: int, model: nn.Module, optimizer: Optimizer, loader: DataLo
                 loss_computer.reset_stats()
 
 
-def train(model: nn.Module, criterion: nn.Module, dataset: dict, args: Namespace, epoch_offset: int):
+def train(model: nn.Module, criterion: nn.Module, dataset: dict, args: Namespace, epoch_offset: int,
+          baseline: Optional[str]):
     model = model.cuda()
 
-    train_loss_computer = RedacLossComputer(
-        criterion,
-        is_robust=True,
-        dataset=dataset["train_data"],
-        alpha=args.alpha,
-        gamma=args.gamma,
-        step_size=args.robust_step_size,
-    )
+    if baseline is not None:
+        train_loss_computer = LossComputer(
+            criterion,
+            is_robust=True,
+            dataset=dataset["train_data"],
+            alpha=args.alpha,
+            gamma=args.gamma,
+            step_size=args.robust_step_size,
+        )
+    else:
+        train_loss_computer = RedacLossComputer(
+            criterion,
+            is_robust=True,
+            dataset=dataset["train_data"],
+            alpha=args.alpha,
+            gamma=args.gamma,
+            step_size=args.robust_step_size,
+        )
 
     optimizer = torch.optim.SGD(
         filter(lambda p: p.requires_grad, model.parameters()),
@@ -84,21 +95,30 @@ def train(model: nn.Module, criterion: nn.Module, dataset: dict, args: Namespace
             log_every=args.log_every,
         )
 
-        logger.info(f'\nValidation:\n')
-        val_loss_computer = LossComputer(
-            criterion,
-            is_robust=True,
-            dataset=dataset["val_data"],
-            step_size=args.robust_step_size,
-            alpha=args.alpha)
+        logger.info(f'\nValidation:')
+        if baseline is not None:
+            val_loss_computer = LossComputer(
+                criterion,
+                is_robust=True,
+                dataset=dataset["val_data"],
+                step_size=args.robust_step_size,
+                alpha=args.alpha)
+        else:
+            val_loss_computer = RedacLossComputer(
+                criterion,
+                is_robust=True,
+                dataset=dataset["val_data"],
+                step_size=args.robust_step_size,
+                alpha=args.alpha
+            )
         run_epoch(
             epoch, model, optimizer,
             dataset["val_loader"],
             val_loss_computer,
             is_training=False)
 
-        # Test set; don't print to avoid peeking
         if dataset["test_data"] is not None:
+            logger.info(f'\nTest:')
             test_loss_computer = LossComputer(
                 criterion,
                 is_robust=True,
@@ -124,10 +144,8 @@ def train(model: nn.Module, criterion: nn.Module, dataset: dict, args: Namespace
             torch.save(model, os.path.join(args.log_dir, "last_model.pth"))
 
         if args.save_best:
-            if args.robust or args.reweight_groups:
-                curr_val_acc = min(val_loss_computer.avg_group_acc)
-            else:
-                curr_val_acc = val_loss_computer.avg_acc
+            # curr_val_acc = min(val_loss_computer.avg_group_acc)
+            curr_val_acc = torch.mean(val_loss_computer.avg_group_acc).item()
             logger.info(f'Current validation accuracy: {curr_val_acc}\n')
             if curr_val_acc > best_val_acc:
                 best_val_acc = curr_val_acc
